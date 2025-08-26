@@ -1,0 +1,53 @@
+# Core Web Framework
+fastapi>=0.100.0,<0.105.0
+uvicorn[standard]>=0.20.0,<0.25.0
+
+# Database Drivers
+asyncpg>=0.28.0,<0.30.0
+influxdb-client>=1.35.0,<1.40.0
+redis>=4.5.0,<6.0.0
+
+# Message Queue
+kafka-python>=2.0.0,<3.0.0
+aiokafka>=0.8.0,<0.9.0
+
+# Data Processing (Essential)
+pandas>=2.0.0,<2.2.0
+numpy>=1.24.0,<1.26.0
+
+# HTTP Client
+httpx>=0.24.0,<0.26.0
+
+# Authentication & Security
+python-jose[cryptography]>=3.3.0,<4.0.0
+passlib[bcrypt]>=1.7.0,<2.0.0
+python-multipart>=0.0.5,<0.1.0
+
+# Configuration Management
+pydantic>=2.4.0,<3.0.0
+pydantic-settings>=2.0.0,<3.0.0
+python-dotenv>=1.0.0,<2.0.0
+
+# Validation & Serialization
+validators>=0.20.0,<1.0.0
+
+# Logging & Monitoring
+structlog>=23.0.0,<24.0.0
+
+# Testing Framework
+pytest>=7.4.0,<8.0.0
+pytest-asyncio>=0.21.0,<1.0.0
+
+# Development Tools (Basic)
+black>=23.0.0,<24.0.0
+isort>=5.12.0,<6.0.0
+
+# Time & Date Handling
+python-dateutil>=2.8.0,<3.0.0
+
+# Financial Data APIs
+yfinance>=0.2.0,<1.0.0
+
+# Utilities
+click>=8.0.0,<9.0.0
+rich>=13.0.0,<14.0.0

@@ -1,0 +1,217 @@
+"""
+Market Analysis System - Main FastAPI Application
+"""
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import os
+from datetime import datetime
+from typing import Dict, Any
+
+# Import API routers
+try:
+    from src.api.indicators import router as indicators_router
+    HAS_INDICATORS = True
+except ImportError:
+    HAS_INDICATORS = False
+    print("⚠️  Indicators API not available")
+
+# Try to import configuration, fallback if not available
+try:
+    from config import get_settings, get_api_settings
+    settings = get_settings()
+    api_settings = get_api_settings()
+    HAS_CONFIG = True
+except ImportError:
+    HAS_CONFIG = False
+    print("⚠️  Configuration module not available, using defaults")
+
+# Create FastAPI application
+app = FastAPI(
+    title="Market Analysis System",
+    description="Real-time market analysis platform for trading insights",
+    version="0.1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    debug=True
+)
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+async def root() -> Dict[str, Any]:
+    """Root endpoint with basic system information."""
+    return {
+        "message": "Market Analysis System API",
+        "version": "0.1.0",
+        "status": "running",
+        "timestamp": datetime.utcnow().isoformat(),
+        "environment": os.getenv("DEBUG", "false")
+    }
+
+@app.get("/health")
+async def health_check() -> Dict[str, Any]:
+    """Health check endpoint for monitoring."""
+    
+    # Basic health check
+    health_status = {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": "0.1.0",
+        "environment": {
+            "debug": os.getenv("DEBUG", "false"),
+            "log_level": os.getenv("LOG_LEVEL", "INFO"),
+        },
+        "services": {}
+    }
+    
+    # Check database connections (basic checks for now)
+    try:
+        db_settings = settings.database
+        kafka_settings = settings.kafka
+        
+        # PostgreSQL check
+        health_status["services"]["postgres"] = {
+            "status": "configured",
+            "host": f"{db_settings.postgres_host}:{db_settings.postgres_port}",
+            "database": db_settings.postgres_db
+        }
+        
+        # InfluxDB check
+        health_status["services"]["influxdb"] = {
+            "status": "configured",
+            "host": f"{db_settings.influxdb_host}:{db_settings.influxdb_port}",
+            "org": db_settings.influxdb_org,
+            "bucket": db_settings.influxdb_bucket
+        }
+        
+        # Redis check
+        health_status["services"]["redis"] = {
+            "status": "configured",
+            "host": f"{db_settings.redis_host}:{db_settings.redis_port}",
+            "database": db_settings.redis_db
+        }
+        
+        # Kafka check
+        health_status["services"]["kafka"] = {
+            "status": "configured",
+            "servers": kafka_settings.bootstrap_servers,
+            "topic_prefix": kafka_settings.topic_prefix
+        }
+        
+    except Exception as e:
+        health_status["status"] = "degraded"
+        health_status["error"] = str(e)
+    
+    return health_status
+
+@app.get("/api/v1/info")
+async def system_info() -> Dict[str, Any]:
+    """Get detailed system information."""
+    return {
+        "system": {
+            "name": "Market Analysis System",
+            "version": "0.1.0",
+            "environment": os.getenv("DEBUG", "false"),
+            "uptime": "Just started",  # TODO: Calculate actual uptime
+        },
+        "features": {
+            "data_ingestion": "planned",
+            "pattern_detection": "planned",
+            "real_time_analysis": "planned",
+            "machine_learning": "planned",
+            "api_endpoints": "basic"
+        },
+        "configuration": {
+            "databases": {
+                "postgres": f"{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}",
+                "influxdb": f"{os.getenv('INFLUXDB_HOST', 'localhost')}:{os.getenv('INFLUXDB_PORT', '8086')}",
+                "redis": f"{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}"
+            },
+            "message_queue": {
+                "kafka": os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+            }
+        }
+    }
+
+@app.get("/api/v1/test")
+async def test_endpoint() -> Dict[str, Any]:
+    """Test endpoint for development purposes."""
+    return {
+        "message": "Test endpoint working",
+        "timestamp": datetime.utcnow().isoformat(),
+        "environment_variables": {
+            "DEBUG": os.getenv("DEBUG"),
+            "LOG_LEVEL": os.getenv("LOG_LEVEL"),
+            "POSTGRES_HOST": os.getenv("POSTGRES_HOST"),
+            "INFLUXDB_HOST": os.getenv("INFLUXDB_HOST"),
+            "REDIS_HOST": os.getenv("REDIS_HOST"),
+            "KAFKA_BOOTSTRAP_SERVERS": os.getenv("KAFKA_BOOTSTRAP_SERVERS"),
+        }
+    }
+
+# Error handlers
+@app.exception_handler(404)
+async def not_found_handler(request, exc):
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "Not Found",
+            "message": f"The requested resource was not found",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+@app.exception_handler(500)
+async def internal_error_handler(request, exc):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal Server Error",
+            "message": "An unexpected error occurred",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+# Include API routers
+if HAS_INDICATORS:
+    app.include_router(indicators_router)
+    print("✅ Technical Indicators API loaded")
+
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    """Initialize the application on startup."""
+    print("🚀 Market Analysis System starting up...")
+    print(f"📊 Environment: {os.getenv('DEBUG', 'production')}")
+    print(f"🔧 Log Level: {os.getenv('LOG_LEVEL', 'INFO')}")
+    if HAS_INDICATORS:
+        print("📈 Technical Indicators: Available")
+    else:
+        print("📈 Technical Indicators: Not loaded")
+    print("✅ FastAPI application started successfully")
+
+# Shutdown event
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up resources on shutdown."""
+    print("🛑 Market Analysis System shutting down...")
+    print("✅ Shutdown completed successfully")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="debug"
+    )

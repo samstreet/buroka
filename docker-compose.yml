@@ -1,0 +1,279 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: market-postgres
+    environment:
+      POSTGRES_DB: market_analysis
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: secure_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-dev.sql:/docker-entrypoint-initdb.d/init-dev.sql
+    networks:
+      - market_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d market_analysis"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # InfluxDB for time series data
+  influxdb:
+    image: influxdb:2.7-alpine
+    container_name: market-influxdb
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: admin_password
+      DOCKER_INFLUXDB_INIT_ORG: market_analysis
+      DOCKER_INFLUXDB_INIT_BUCKET: market_data_dev
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: dev_token_12345
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+      - influxdb_config:/etc/influxdb2
+    networks:
+      - market_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: market-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - market_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Kafka message broker (KRaft mode - no Zookeeper needed)
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: market-kafka
+    environment:
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: true
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - market_network
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+
+  # Kafka UI for monitoring
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: market-kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: market-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    ports:
+      - "8080:8080"
+    networks:
+      - market_network
+
+  # Prometheus for monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: market-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.dev.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - market_network
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: market-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - market_network
+
+  # Market Analysis API
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: market-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    env_file:
+      - ./docker/env/development.env
+    environment:
+      # Override specific settings for development
+      RELOAD: true
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app:cached
+      - /app/__pycache__  # Prevent cache conflicts
+    command: ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--log-level", "debug"]
+    networks:
+      - market_network
+    restart: unless-stopped
+
+  # Kafka topic initialization
+  kafka-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: market-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC_PREFIX: market_dev_
+    command: python scripts/init_kafka_topics.py
+    networks:
+      - market_network
+    restart: "no"
+    profiles:
+      - init
+
+  # Database connection testing
+  db-init:
+    build:
+      context: .
+      dockerfile: Dockerfile  
+      target: development
+    container_name: market-db-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: market_analysis
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: secure_password
+      INFLUXDB_HOST: influxdb
+      INFLUXDB_PORT: 8086
+      INFLUXDB_TOKEN: dev_token_12345
+      INFLUXDB_ORG: market_analysis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    command: python scripts/test_connections.py
+    networks:
+      - market_network
+    restart: "no"
+    profiles:
+      - init
+
+  # Data seeding
+  seed-data:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development  
+    container_name: market-seed-data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: market_analysis
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: secure_password
+    command: python scripts/seed_dev_data.py
+    networks:
+      - market_network
+    restart: "no"
+    profiles:
+      - init
+
+volumes:
+  postgres_data:
+    driver: local
+  influxdb_data:
+    driver: local
+  influxdb_config:
+    driver: local
+  redis_data:
+    driver: local
+  kafka_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  market_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
