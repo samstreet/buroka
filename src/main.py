@@ -5,9 +5,19 @@ Market Analysis System - Main FastAPI Application
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
 import os
 from datetime import datetime
 from typing import Dict, Any
+
+# Import middleware
+from src.api.middleware.security import (
+    SecurityHeadersMiddleware, 
+    RateLimitMiddleware, 
+    RequestLoggingMiddleware,
+    APIKeyMiddleware
+)
 
 # Import API routers
 try:
@@ -16,6 +26,13 @@ try:
 except ImportError:
     HAS_INDICATORS = False
     print("⚠️  Indicators API not available")
+
+try:
+    from src.api.routers.monitoring import router as monitoring_router
+    HAS_MONITORING = True
+except ImportError:
+    HAS_MONITORING = False
+    print("⚠️  Monitoring API not available")
 
 # Try to import configuration, fallback if not available
 try:
@@ -27,6 +44,20 @@ except ImportError:
     HAS_CONFIG = False
     print("⚠️  Configuration module not available, using defaults")
 
+try:
+    from src.api.routers.storage import router as storage_router
+    HAS_STORAGE = True
+except ImportError:
+    HAS_STORAGE = False
+    print("⚠️  Storage API not available")
+
+try:
+    from src.api.routers.auth import router as auth_router
+    HAS_AUTH = True
+except ImportError:
+    HAS_AUTH = False
+    print("⚠️  Authentication API not available")
+
 # Create FastAPI application
 app = FastAPI(
     title="Market Analysis System",
@@ -34,16 +65,32 @@ app = FastAPI(
     version="0.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
-    debug=True
+    debug=os.getenv("DEBUG", "false").lower() == "true"
 )
+
+# Add middleware (order matters - last added is executed first)
+# Security headers middleware
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Rate limiting middleware
+app.add_middleware(RateLimitMiddleware, requests_per_minute=1000)
+
+# Request logging middleware
+app.add_middleware(RequestLoggingMiddleware)
+
+# API key middleware (if keys are configured)
+api_keys = {}  # In production, load from environment or database
+if api_keys:
+    app.add_middleware(APIKeyMiddleware, api_keys=api_keys)
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["X-Process-Time", "X-RateLimit-Limit", "X-RateLimit-Remaining"],
 )
 
 @app.get("/")
@@ -186,6 +233,18 @@ if HAS_INDICATORS:
     app.include_router(indicators_router)
     print("✅ Technical Indicators API loaded")
 
+if HAS_MONITORING:
+    app.include_router(monitoring_router)
+    print("✅ Monitoring API loaded")
+
+if HAS_STORAGE:
+    app.include_router(storage_router)
+    print("✅ Storage API loaded")
+
+if HAS_AUTH:
+    app.include_router(auth_router)
+    print("✅ Authentication API loaded")
+
 # Startup event
 @app.on_event("startup")
 async def startup_event():
@@ -197,6 +256,22 @@ async def startup_event():
         print("📈 Technical Indicators: Available")
     else:
         print("📈 Technical Indicators: Not loaded")
+    
+    if HAS_MONITORING:
+        print("📊 Monitoring API: Available")
+    else:
+        print("📊 Monitoring API: Not loaded")
+    
+    if HAS_STORAGE:
+        print("💾 Storage API: Available")
+    else:
+        print("💾 Storage API: Not loaded")
+    
+    if HAS_AUTH:
+        print("🔐 Authentication API: Available")
+    else:
+        print("🔐 Authentication API: Not loaded")
+    
     print("✅ FastAPI application started successfully")
 
 # Shutdown event

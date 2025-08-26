@@ -4,7 +4,8 @@ Configuration management for Market Analysis System
 
 import os
 from typing import Optional, List
-from pydantic import BaseSettings, validator
+from pydantic import field_validator
+from pydantic_settings import BaseSettings
 from functools import lru_cache
 
 class DatabaseSettings(BaseSettings):
@@ -61,7 +62,8 @@ class KafkaSettings(BaseSettings):
     sentiment_data_topic: str = "sentiment_data"
     ml_predictions_topic: str = "ml_predictions"
     
-    @validator('bootstrap_servers')
+    @field_validator('bootstrap_servers')
+    @classmethod
     def validate_bootstrap_servers(cls, v):
         if not v:
             raise ValueError('Bootstrap servers cannot be empty')
