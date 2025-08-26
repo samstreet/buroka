@@ -31,39 +31,93 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Simple in-memory rate limiting middleware."""
+    """Redis-based rate limiting middleware with token bucket algorithm."""
     
-    def __init__(self, app, requests_per_minute: int = 1000):
+    def __init__(self, app, requests_per_hour: int = 1000, use_redis: bool = True):
         super().__init__(app)
-        self.requests_per_minute = requests_per_minute
-        self.request_counts: Dict[str, Dict[str, Any]] = {}
+        self.requests_per_hour = requests_per_hour
+        self.use_redis = use_redis
         self.logger = logging.getLogger(__name__)
+        
+        # Fallback in-memory rate limiting
+        self.request_counts: Dict[str, Dict[str, Any]] = {}
+        
+        # Redis rate limiter (initialized lazily)
+        self._rate_limiter = None
+    
+    async def _get_rate_limiter(self):
+        """Get or create Redis rate limiter."""
+        if self._rate_limiter is None and self.use_redis:
+            try:
+                from ...utils.redis_client import get_redis_client, RateLimiter
+                redis_client = get_redis_client()
+                self._rate_limiter = RateLimiter(
+                    redis_client=redis_client,
+                    requests_per_hour=self.requests_per_hour
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize Redis rate limiter: {e}")
+                self.use_redis = False
+        
+        return self._rate_limiter
     
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        # Get client IP
-        client_ip = self._get_client_ip(request)
+        # Get client identifier
+        client_id = self._get_client_identifier(request)
         
-        # Check rate limit
-        if await self._is_rate_limited(client_ip):
-            self.logger.warning(f"Rate limit exceeded for {client_ip}")
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Rate limit exceeded. Please try again later."
-            )
+        # Try Redis rate limiting first
+        if self.use_redis:
+            rate_limiter = await self._get_rate_limiter()
+            if rate_limiter:
+                allowed, metadata = await rate_limiter.is_allowed(client_id)
+                
+                if not allowed:
+                    self.logger.warning(f"Redis rate limit exceeded for {client_id}")
+                    return self._create_rate_limit_response(metadata)
+                
+                # Process request
+                response = await call_next(request)
+                
+                # Add rate limit headers
+                self._add_rate_limit_headers(response, metadata)
+                return response
         
-        # Record request
-        await self._record_request(client_ip)
+        # Fallback to in-memory rate limiting
+        if await self._is_memory_rate_limited(client_id):
+            self.logger.warning(f"Memory rate limit exceeded for {client_id}")
+            return self._create_rate_limit_response({
+                "limit": self.requests_per_hour,
+                "remaining": 0,
+                "reset_after": 60
+            })
+        
+        # Record request in memory
+        await self._record_memory_request(client_id)
         
         # Process request
         response = await call_next(request)
         
-        # Add rate limit headers
-        remaining = await self._get_remaining_requests(client_ip)
-        response.headers["X-RateLimit-Limit"] = str(self.requests_per_minute)
-        response.headers["X-RateLimit-Remaining"] = str(remaining)
-        response.headers["X-RateLimit-Reset"] = str(int(time.time()) + 60)
+        # Add fallback rate limit headers
+        remaining = await self._get_memory_remaining_requests(client_id)
+        self._add_rate_limit_headers(response, {
+            "limit": self.requests_per_hour,
+            "remaining": remaining,
+            "reset_after": 60
+        })
         
         return response
+    
+    def _get_client_identifier(self, request: Request) -> str:
+        """Get unique client identifier for rate limiting."""
+        # Try API key first (for authenticated requests)
+        api_key = request.headers.get("X-API-Key") or request.headers.get("Authorization")
+        if api_key and api_key.startswith("Bearer "):
+            return f"api_key:{api_key[7:20]}..."  # Use first 20 chars of token
+        elif api_key:
+            return f"api_key:{api_key[:20]}..."
+        
+        # Fall back to IP address
+        return f"ip:{self._get_client_ip(request)}"
     
     def _get_client_ip(self, request: Request) -> str:
         """Get client IP address."""
@@ -79,69 +133,107 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Fall back to direct client
         return request.client.host if request.client else "unknown"
     
-    async def _is_rate_limited(self, client_ip: str) -> bool:
-        """Check if client is rate limited."""
+    def _create_rate_limit_response(self, metadata: Dict[str, Any]) -> Response:
+        """Create HTTP 429 rate limit response."""
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "error": "Rate limit exceeded",
+                "message": "Too many requests. Please try again later.",
+                "limit": metadata.get("limit"),
+                "remaining": metadata.get("remaining", 0),
+                "reset_after": metadata.get("reset_after")
+            },
+            headers={
+                "X-RateLimit-Limit": str(metadata.get("limit", self.requests_per_hour)),
+                "X-RateLimit-Remaining": str(metadata.get("remaining", 0)),
+                "X-RateLimit-Reset": str(metadata.get("reset", int(time.time()) + 3600)),
+                "Retry-After": str(metadata.get("reset_after", 3600))
+            }
+        )
+    
+    def _add_rate_limit_headers(self, response: Response, metadata: Dict[str, Any]) -> None:
+        """Add rate limit headers to response."""
+        response.headers["X-RateLimit-Limit"] = str(metadata.get("limit", self.requests_per_hour))
+        response.headers["X-RateLimit-Remaining"] = str(metadata.get("remaining", 0))
+        response.headers["X-RateLimit-Reset"] = str(metadata.get("reset", int(time.time()) + 3600))
+    
+    # Memory-based fallback rate limiting methods
+    async def _is_memory_rate_limited(self, client_id: str) -> bool:
+        """Check if client is rate limited using in-memory storage."""
         current_time = time.time()
-        minute_window = int(current_time // 60)
+        hour_window = int(current_time // 3600)
         
-        if client_ip not in self.request_counts:
+        if client_id not in self.request_counts:
             return False
         
-        client_data = self.request_counts[client_ip]
+        client_data = self.request_counts[client_id]
         
         # Clean old entries
-        self._cleanup_old_entries(client_data, minute_window)
+        self._cleanup_memory_entries(client_data, hour_window)
         
-        # Check current minute requests
-        current_requests = client_data.get(minute_window, 0)
-        return current_requests >= self.requests_per_minute
+        # Check current hour requests
+        current_requests = client_data.get(hour_window, 0)
+        return current_requests >= self.requests_per_hour
     
-    async def _record_request(self, client_ip: str) -> None:
-        """Record a request for the client."""
+    async def _record_memory_request(self, client_id: str) -> None:
+        """Record a request for the client in memory."""
         current_time = time.time()
-        minute_window = int(current_time // 60)
+        hour_window = int(current_time // 3600)
         
-        if client_ip not in self.request_counts:
-            self.request_counts[client_ip] = {}
+        if client_id not in self.request_counts:
+            self.request_counts[client_id] = {}
         
-        client_data = self.request_counts[client_ip]
-        client_data[minute_window] = client_data.get(minute_window, 0) + 1
+        client_data = self.request_counts[client_id]
+        client_data[hour_window] = client_data.get(hour_window, 0) + 1
         
         # Cleanup old entries
-        self._cleanup_old_entries(client_data, minute_window)
+        self._cleanup_memory_entries(client_data, hour_window)
     
-    async def _get_remaining_requests(self, client_ip: str) -> int:
-        """Get remaining requests for the client."""
+    async def _get_memory_remaining_requests(self, client_id: str) -> int:
+        """Get remaining requests for the client from memory."""
         current_time = time.time()
-        minute_window = int(current_time // 60)
+        hour_window = int(current_time // 3600)
         
-        if client_ip not in self.request_counts:
-            return self.requests_per_minute
+        if client_id not in self.request_counts:
+            return self.requests_per_hour
         
-        client_data = self.request_counts[client_ip]
-        current_requests = client_data.get(minute_window, 0)
+        client_data = self.request_counts[client_id]
+        current_requests = client_data.get(hour_window, 0)
         
-        return max(0, self.requests_per_minute - current_requests)
+        return max(0, self.requests_per_hour - current_requests)
     
-    def _cleanup_old_entries(self, client_data: Dict[str, Any], current_window: int) -> None:
-        """Clean up old rate limit entries."""
-        # Keep only current and previous minute
+    def _cleanup_memory_entries(self, client_data: Dict[str, Any], current_window: int) -> None:
+        """Clean up old rate limit entries from memory."""
+        # Keep only current and previous hour
         keys_to_remove = [
             key for key in client_data.keys() 
-            if key < current_window - 1
+            if isinstance(key, int) and key < current_window - 1
         ]
         for key in keys_to_remove:
             del client_data[key]
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
-    """Log all API requests and responses."""
+    """Enhanced logging middleware with structured logging."""
     
     def __init__(self, app):
         super().__init__(app)
         self.logger = logging.getLogger(__name__)
+        
+        # Try to import structured logger
+        try:
+            from ...utils.logging_config import get_request_logger
+            self.structured_logger = get_request_logger()
+            self.use_structured = True
+        except ImportError:
+            self.structured_logger = None
+            self.use_structured = False
     
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        # Generate request ID
+        request_id = f"req_{secrets.token_urlsafe(8)}"
+        
         # Record start time
         start_time = time.time()
         
@@ -151,34 +243,92 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         url = str(request.url)
         user_agent = request.headers.get("User-Agent", "")
         
+        # Get user info if available
+        user_id = None
+        if hasattr(request.state, 'user'):
+            user_id = getattr(request.state.user, 'user_id', None)
+        elif hasattr(request.state, 'api_key_info'):
+            user_id = f"api_key:{request.state.api_key_info.get('id', 'unknown')}"
+        
+        # Get content length
+        content_length = request.headers.get("content-length")
+        body_size = int(content_length) if content_length else None
+        
         # Log request
-        self.logger.info(f"Request: {method} {url} from {client_ip} - {user_agent}")
+        if self.use_structured and self.structured_logger:
+            self.structured_logger.log_request(
+                method=method,
+                url=url,
+                ip_address=client_ip,
+                user_agent=user_agent,
+                user_id=user_id,
+                request_id=request_id,
+                body_size=body_size
+            )
+        else:
+            # Fallback logging
+            self.logger.info(f"Request: {method} {url} from {client_ip} [{request_id}]")
         
         try:
+            # Add request ID to request state
+            request.state.request_id = request_id
+            
             # Process request
             response = await call_next(request)
             
             # Calculate response time
             process_time = time.time() - start_time
             
-            # Log response
-            self.logger.info(
-                f"Response: {response.status_code} for {method} {url} "
-                f"- {process_time:.3f}s"
-            )
+            # Get response size
+            response_size = None
+            if hasattr(response, 'headers') and 'content-length' in response.headers:
+                response_size = int(response.headers['content-length'])
             
-            # Add response time header
+            # Log response
+            if self.use_structured and self.structured_logger:
+                self.structured_logger.log_response(
+                    method=method,
+                    url=url,
+                    status_code=response.status_code,
+                    response_time=process_time,
+                    response_size=response_size,
+                    user_id=user_id,
+                    request_id=request_id
+                )
+            else:
+                # Fallback logging
+                self.logger.info(
+                    f"Response: {response.status_code} for {method} {url} "
+                    f"- {process_time:.3f}s [{request_id}]"
+                )
+            
+            # Add response headers
             response.headers["X-Process-Time"] = str(process_time)
+            response.headers["X-Request-ID"] = request_id
             
             return response
             
         except Exception as e:
-            # Log error
+            # Calculate response time
             process_time = time.time() - start_time
-            self.logger.error(
-                f"Error: {str(e)} for {method} {url} "
-                f"- {process_time:.3f}s"
-            )
+            
+            # Log error
+            if self.use_structured and self.structured_logger:
+                self.structured_logger.log_response(
+                    method=method,
+                    url=url,
+                    status_code=500,
+                    response_time=process_time,
+                    user_id=user_id,
+                    request_id=request_id,
+                    error=str(e)
+                )
+            else:
+                # Fallback logging
+                self.logger.error(
+                    f"Error: {str(e)} for {method} {url} "
+                    f"- {process_time:.3f}s [{request_id}]"
+                )
             raise
     
     def _get_client_ip(self, request: Request) -> str:
@@ -201,25 +351,45 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.api_keys = api_keys or {}
         self.logger = logging.getLogger(__name__)
+        self._get_api_keys = None  # Function to get current API keys
         
         # Paths that don't require authentication
         self.public_paths = {
             "/",
             "/health",
-            "/docs",
+            "/docs", 
             "/redoc",
             "/openapi.json",
             "/api/v1/info",
-            "/api/v1/test"
+            "/api/v1/test",
+            "/api/v1/health",
+            "/api/v1/health/simple",
+            "/api/v1/health/ready", 
+            "/api/v1/health/live",
+            "/api/v1/auth/login",
+            "/api/v1/auth/register",
+            "/api/v1/auth/status"
         }
+    
+    def set_api_keys_getter(self, getter_func):
+        """Set function to dynamically get API keys."""
+        self._get_api_keys = getter_func
     
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # Skip authentication for public paths
         if self._is_public_path(request.url.path):
             return await call_next(request)
         
+        # Get current API keys
+        current_api_keys = self.api_keys
+        if self._get_api_keys:
+            try:
+                current_api_keys = self._get_api_keys()
+            except Exception as e:
+                self.logger.error(f"Error getting API keys: {e}")
+        
         # Skip authentication if no API keys configured
-        if not self.api_keys:
+        if not current_api_keys:
             return await call_next(request)
         
         # Check for API key
@@ -232,7 +402,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             )
         
         # Validate API key
-        key_info = self.api_keys.get(api_key)
+        key_info = current_api_keys.get(api_key)
         if not key_info:
             self.logger.warning(f"Invalid API key used: {api_key[:8]}...")
             raise HTTPException(

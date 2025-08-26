@@ -79,6 +79,13 @@ except ImportError:
     HAS_PAGINATED_DATA = False
     print("⚠️  Paginated Data API not available")
 
+try:
+    from src.api.routers.api_keys import router as api_keys_router, get_api_keys_dict
+    HAS_API_KEYS = True
+except ImportError:
+    HAS_API_KEYS = False
+    print("⚠️  API Keys API not available")
+
 # Create FastAPI application
 app = FastAPI(
     title="Market Analysis System",
@@ -93,16 +100,17 @@ app = FastAPI(
 # Security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
 
-# Rate limiting middleware
-app.add_middleware(RateLimitMiddleware, requests_per_minute=1000)
+# Rate limiting middleware (1000 requests per hour)
+app.add_middleware(RateLimitMiddleware, requests_per_hour=1000, use_redis=True)
 
 # Request logging middleware
 app.add_middleware(RequestLoggingMiddleware)
 
-# API key middleware (if keys are configured)
-api_keys = {}  # In production, load from environment or database
-if api_keys:
-    app.add_middleware(APIKeyMiddleware, api_keys=api_keys)
+# API key middleware (disabled by default - enable when API keys are configured)
+# if HAS_API_KEYS:
+#     from src.api.routers.api_keys import get_api_keys_dict
+#     api_keys_dict = get_api_keys_dict()
+#     app.add_middleware(APIKeyMiddleware, api_keys=api_keys_dict)
 
 # Configure CORS
 app.add_middleware(
@@ -305,6 +313,10 @@ if HAS_PAGINATED_DATA:
     app.include_router(paginated_data_router)
     print("✅ Paginated Data API loaded")
 
+if HAS_API_KEYS:
+    app.include_router(api_keys_router)
+    print("✅ API Keys management loaded")
+
 # Startup event
 @app.on_event("startup")
 async def startup_event():
@@ -312,6 +324,28 @@ async def startup_event():
     print("🚀 Market Analysis System starting up...")
     print(f"📊 Environment: {os.getenv('DEBUG', 'production')}")
     print(f"🔧 Log Level: {os.getenv('LOG_LEVEL', 'INFO')}")
+    
+    # Initialize logging system
+    try:
+        from src.utils.logging_config import setup_logging
+        log_level = os.getenv("LOG_LEVEL", "INFO")
+        setup_logging(
+            log_level=log_level,
+            log_format="structured" if os.getenv("LOG_FORMAT") == "json" else "standard",
+            log_file="/app/logs/api.log" if os.getenv("LOG_TO_FILE") else None
+        )
+        print(f"📝 Structured logging initialized (level: {log_level})")
+    except Exception as e:
+        print(f"⚠️  Logging setup failed: {e}")
+    
+    # Initialize Redis for rate limiting
+    try:
+        from src.utils.redis_client import init_redis
+        await init_redis()
+        print("📦 Redis client initialized for rate limiting")
+    except Exception as e:
+        print(f"⚠️  Redis initialization failed: {e} (fallback to memory)")
+    
     if HAS_INDICATORS:
         print("📈 Technical Indicators: Available")
     else:
@@ -347,6 +381,11 @@ async def startup_event():
     else:
         print("📄 Paginated Data API: Not loaded")
     
+    if HAS_API_KEYS:
+        print("🔑 API Keys Management: Available") 
+    else:
+        print("🔑 API Keys Management: Not loaded")
+    
     print("✅ FastAPI application started successfully")
 
 # Shutdown event
@@ -354,6 +393,15 @@ async def startup_event():
 async def shutdown_event():
     """Clean up resources on shutdown."""
     print("🛑 Market Analysis System shutting down...")
+    
+    # Close Redis connections
+    try:
+        from src.utils.redis_client import close_redis
+        await close_redis()
+        print("📦 Redis connections closed")
+    except Exception as e:
+        print(f"⚠️  Redis shutdown error: {e}")
+    
     print("✅ Shutdown completed successfully")
 
 if __name__ == "__main__":
