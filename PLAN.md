@@ -71,12 +71,12 @@ A real-time market analysis platform that ingests continuous data streams from s
 - [x] Add API documentation with Swagger/OpenAPI
 
 ### Day 18-19: Core API Endpoints
-- [ ] Create `/health` endpoint with database connectivity checks
-- [ ] Implement `/api/v1/market-data/{symbol}` endpoint
-- [ ] Add query parameters for time range and data granularity
-- [ ] Implement pagination for large data sets
-- [ ] Add response caching with Redis
-- [ ] Write API integration tests
+- [x] Create `/health` endpoint with database connectivity checks
+- [x] Implement `/api/v1/market-data/{symbol}` endpoint
+- [x] Add query parameters for time range and data granularity
+- [x] Implement pagination for large data sets
+- [x] Add response caching with Redis
+- [x] Write API integration tests
 
 ### Day 20-21: Rate Limiting & Security
 - [ ] Implement Redis-based rate limiting (1000 requests/hour)

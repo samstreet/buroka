@@ -58,6 +58,27 @@ except ImportError:
     HAS_AUTH = False
     print("⚠️  Authentication API not available")
 
+try:
+    from src.api.routers.health import router as health_router
+    HAS_HEALTH = True
+except ImportError:
+    HAS_HEALTH = False
+    print("⚠️  Health API not available")
+
+try:
+    from src.api.routers.market_data import router as market_data_router
+    HAS_MARKET_DATA = True
+except ImportError:
+    HAS_MARKET_DATA = False
+    print("⚠️  Market Data API not available")
+
+try:
+    from src.api.routers.paginated_data import router as paginated_data_router
+    HAS_PAGINATED_DATA = True
+except ImportError:
+    HAS_PAGINATED_DATA = False
+    print("⚠️  Paginated Data API not available")
+
 # Create FastAPI application
 app = FastAPI(
     title="Market Analysis System",
@@ -122,37 +143,64 @@ async def health_check() -> Dict[str, Any]:
     
     # Check database connections (basic checks for now)
     try:
-        db_settings = settings.database
-        kafka_settings = settings.kafka
-        
-        # PostgreSQL check
-        health_status["services"]["postgres"] = {
-            "status": "configured",
-            "host": f"{db_settings.postgres_host}:{db_settings.postgres_port}",
-            "database": db_settings.postgres_db
-        }
-        
-        # InfluxDB check
-        health_status["services"]["influxdb"] = {
-            "status": "configured",
-            "host": f"{db_settings.influxdb_host}:{db_settings.influxdb_port}",
-            "org": db_settings.influxdb_org,
-            "bucket": db_settings.influxdb_bucket
-        }
-        
-        # Redis check
-        health_status["services"]["redis"] = {
-            "status": "configured",
-            "host": f"{db_settings.redis_host}:{db_settings.redis_port}",
-            "database": db_settings.redis_db
-        }
-        
-        # Kafka check
-        health_status["services"]["kafka"] = {
-            "status": "configured",
-            "servers": kafka_settings.bootstrap_servers,
-            "topic_prefix": kafka_settings.topic_prefix
-        }
+        if HAS_CONFIG:
+            db_settings = settings.database
+            kafka_settings = settings.kafka
+            
+            # PostgreSQL check
+            health_status["services"]["postgres"] = {
+                "status": "configured",
+                "host": f"{db_settings.postgres_host}:{db_settings.postgres_port}",
+                "database": db_settings.postgres_db
+            }
+            
+            # InfluxDB check
+            health_status["services"]["influxdb"] = {
+                "status": "configured",
+                "host": f"{db_settings.influxdb_host}:{db_settings.influxdb_port}",
+                "org": db_settings.influxdb_org,
+                "bucket": db_settings.influxdb_bucket
+            }
+            
+            # Redis check
+            health_status["services"]["redis"] = {
+                "status": "configured",
+                "host": f"{db_settings.redis_host}:{db_settings.redis_port}",
+                "database": db_settings.redis_db
+            }
+            
+            # Kafka check
+            health_status["services"]["kafka"] = {
+                "status": "configured",
+                "servers": kafka_settings.bootstrap_servers,
+                "topic_prefix": kafka_settings.topic_prefix
+            }
+        else:
+            # Use environment variables directly when config is not available
+            health_status["services"]["postgres"] = {
+                "status": "configured",
+                "host": f"{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}",
+                "database": os.getenv('POSTGRES_DB', 'market_analysis')
+            }
+            
+            health_status["services"]["influxdb"] = {
+                "status": "configured", 
+                "host": f"{os.getenv('INFLUXDB_HOST', 'localhost')}:{os.getenv('INFLUXDB_PORT', '8086')}",
+                "org": os.getenv('INFLUXDB_ORG', 'market-analysis'),
+                "bucket": os.getenv('INFLUXDB_BUCKET', 'market-data')
+            }
+            
+            health_status["services"]["redis"] = {
+                "status": "configured",
+                "host": f"{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}",
+                "database": os.getenv('REDIS_DB', '0')
+            }
+            
+            health_status["services"]["kafka"] = {
+                "status": "configured",
+                "servers": os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092'),
+                "topic_prefix": os.getenv('KAFKA_TOPIC_PREFIX', 'market_')
+            }
         
     except Exception as e:
         health_status["status"] = "degraded"
@@ -245,6 +293,18 @@ if HAS_AUTH:
     app.include_router(auth_router)
     print("✅ Authentication API loaded")
 
+if HAS_HEALTH:
+    app.include_router(health_router)
+    print("✅ Health API loaded")
+
+if HAS_MARKET_DATA:
+    app.include_router(market_data_router)
+    print("✅ Market Data API loaded")
+
+if HAS_PAGINATED_DATA:
+    app.include_router(paginated_data_router)
+    print("✅ Paginated Data API loaded")
+
 # Startup event
 @app.on_event("startup")
 async def startup_event():
@@ -271,6 +331,21 @@ async def startup_event():
         print("🔐 Authentication API: Available")
     else:
         print("🔐 Authentication API: Not loaded")
+    
+    if HAS_HEALTH:
+        print("❤️ Health API: Available")
+    else:
+        print("❤️ Health API: Not loaded")
+    
+    if HAS_MARKET_DATA:
+        print("📈 Market Data API: Available") 
+    else:
+        print("📈 Market Data API: Not loaded")
+    
+    if HAS_PAGINATED_DATA:
+        print("📄 Paginated Data API: Available") 
+    else:
+        print("📄 Paginated Data API: Not loaded")
     
     print("✅ FastAPI application started successfully")
 
