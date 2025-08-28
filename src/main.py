@@ -21,7 +21,14 @@ from src.api.middleware.security import (
 from src.api.middleware.input_validation import InputValidationMiddleware
 from src.api.middleware.api_monitoring import APIMonitoringMiddleware, get_usage_tracker
 from src.api.middleware.security_config import get_security_config, init_security_config
+from src.api.middleware.performance_monitoring import (
+    PerformanceMonitoringMiddleware,
+    MemoryMonitoringMiddleware,
+    CircuitBreakerMiddleware,
+    RequestTracingMiddleware
+)
 from src.utils.audit_logger import get_audit_logger, init_audit_logger
+from src.utils.performance_profiler import init_profiler, shutdown_profiler
 
 # Import API routers
 try:
@@ -109,7 +116,35 @@ audit_logger = init_audit_logger(
 )
 
 # Add middleware (order matters - last added is executed first)
-# API monitoring middleware (should be first to capture all metrics)
+# Performance monitoring middleware (should be first for comprehensive metrics)
+app.add_middleware(
+    PerformanceMonitoringMiddleware,
+    enable_detailed_logging=os.getenv("ENABLE_DETAILED_PERFORMANCE_LOGGING", "false").lower() == "true",
+    slow_request_threshold=float(os.getenv("SLOW_REQUEST_THRESHOLD", "1.0")),
+    memory_snapshot_interval=int(os.getenv("MEMORY_SNAPSHOT_INTERVAL", "100")),
+    exclude_paths={"/health", "/metrics", "/docs", "/redoc", "/openapi.json", "/favicon.ico"}
+)
+
+# Memory monitoring middleware
+app.add_middleware(
+    MemoryMonitoringMiddleware,
+    memory_threshold_mb=float(os.getenv("MEMORY_THRESHOLD_MB", "500.0")),
+    snapshot_interval=int(os.getenv("MEMORY_SNAPSHOT_INTERVAL", "50")),
+    leak_detection_enabled=os.getenv("MEMORY_LEAK_DETECTION", "true").lower() == "true"
+)
+
+# Circuit breaker middleware for resilience
+app.add_middleware(
+    CircuitBreakerMiddleware,
+    failure_threshold=int(os.getenv("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "5")),
+    recovery_timeout=int(os.getenv("CIRCUIT_BREAKER_RECOVERY_TIMEOUT", "60")),
+    error_rate_threshold=float(os.getenv("CIRCUIT_BREAKER_ERROR_RATE", "0.5"))
+)
+
+# Request tracing middleware
+app.add_middleware(RequestTracingMiddleware, header_name="X-Trace-ID")
+
+# API monitoring middleware (should be after performance monitoring)
 app.add_middleware(APIMonitoringMiddleware, tracker=get_usage_tracker())
 
 # Security headers middleware
@@ -374,6 +409,13 @@ async def startup_event():
     except Exception as e:
         print(f"⚠️  Redis initialization failed: {e} (fallback to memory)")
     
+    # Initialize performance profiler
+    try:
+        await init_profiler()
+        print("📊 Performance profiler initialized")
+    except Exception as e:
+        print(f"⚠️  Performance profiler initialization failed: {e}")
+    
     if HAS_INDICATORS:
         print("📈 Technical Indicators: Available")
     else:
@@ -429,6 +471,13 @@ async def shutdown_event():
         print("📦 Redis connections closed")
     except Exception as e:
         print(f"⚠️  Redis shutdown error: {e}")
+    
+    # Shutdown performance profiler
+    try:
+        await shutdown_profiler()
+        print("📊 Performance profiler shutdown complete")
+    except Exception as e:
+        print(f"⚠️  Performance profiler shutdown error: {e}")
     
     print("✅ Shutdown completed successfully")
 
