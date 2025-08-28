@@ -82,9 +82,9 @@ A real-time market analysis platform that ingests continuous data streams from s
 - [x] Implement Redis-based rate limiting (1000 requests/hour)
 - [x] Add API key authentication for external access
 - [x] Implement request/response logging
-- [ ] Add input validation and sanitization
-- [ ] Set up HTTPS and security best practices
-- [ ] Create API usage monitoring
+- [x] Add input validation and sanitization
+- [x] Set up HTTPS and security best practices
+- [x] Create API usage monitoring
 
 ## Week 4: Monitoring & Quality Assurance
 

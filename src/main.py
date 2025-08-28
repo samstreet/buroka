@@ -18,6 +18,10 @@ from src.api.middleware.security import (
     RequestLoggingMiddleware,
     APIKeyMiddleware
 )
+from src.api.middleware.input_validation import InputValidationMiddleware
+from src.api.middleware.api_monitoring import APIMonitoringMiddleware, get_usage_tracker
+from src.api.middleware.security_config import get_security_config, init_security_config
+from src.utils.audit_logger import get_audit_logger, init_audit_logger
 
 # Import API routers
 try:
@@ -96,12 +100,31 @@ app = FastAPI(
     debug=os.getenv("DEBUG", "false").lower() == "true"
 )
 
+# Initialize security configuration and audit logging
+security_config = init_security_config()
+audit_logger = init_audit_logger(
+    log_file="logs/audit.log",
+    enable_file_logging=True,
+    log_sensitive_data=os.getenv("LOG_SENSITIVE_DATA", "false").lower() == "true"
+)
+
 # Add middleware (order matters - last added is executed first)
+# API monitoring middleware (should be first to capture all metrics)
+app.add_middleware(APIMonitoringMiddleware, tracker=get_usage_tracker())
+
 # Security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
 
-# Rate limiting middleware (1000 requests per hour)
-app.add_middleware(RateLimitMiddleware, requests_per_hour=1000, use_redis=True)
+# Input validation and sanitization middleware
+app.add_middleware(InputValidationMiddleware, enabled_paths={"/api/"})
+
+# Rate limiting middleware (get settings from security config)
+rate_limit_settings = security_config.get_rate_limit_settings()
+app.add_middleware(
+    RateLimitMiddleware, 
+    requests_per_hour=rate_limit_settings["requests_per_hour"],
+    use_redis=True
+)
 
 # Request logging middleware
 app.add_middleware(RequestLoggingMiddleware)
@@ -112,14 +135,11 @@ app.add_middleware(RequestLoggingMiddleware)
 #     api_keys_dict = get_api_keys_dict()
 #     app.add_middleware(APIKeyMiddleware, api_keys=api_keys_dict)
 
-# Configure CORS
+# Configure CORS (get settings from security config)
+cors_config = security_config.get_cors_config()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
-    expose_headers=["X-Process-Time", "X-RateLimit-Limit", "X-RateLimit-Remaining"],
+    **cors_config
 )
 
 @app.get("/")
@@ -316,6 +336,14 @@ if HAS_PAGINATED_DATA:
 if HAS_API_KEYS:
     app.include_router(api_keys_router)
     print("✅ API Keys management loaded")
+
+# Always include security status router
+try:
+    from src.api.routers.security_status import router as security_router
+    app.include_router(security_router)
+    print("✅ Security Status API loaded")
+except ImportError as e:
+    print(f"⚠️  Security Status API not available: {e}")
 
 # Startup event
 @app.on_event("startup")
