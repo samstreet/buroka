@@ -97,6 +97,13 @@ except ImportError:
     HAS_API_KEYS = False
     print("⚠️  API Keys API not available")
 
+try:
+    from src.api.routers.volume_indicators import router as volume_router
+    HAS_VOLUME = True
+except ImportError:
+    HAS_VOLUME = False
+    print("⚠️  Volume Indicators API not available")
+
 # Create FastAPI application
 app = FastAPI(
     title="Market Analysis System",
@@ -379,6 +386,11 @@ try:
     print("✅ Security Status API loaded")
 except ImportError as e:
     print(f"⚠️  Security Status API not available: {e}")
+
+# Include volume indicators router
+if HAS_VOLUME:
+    app.include_router(volume_router)
+    print("✅ Volume Indicators API loaded")
 
 # Startup event
 @app.on_event("startup")
