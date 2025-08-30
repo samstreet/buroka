@@ -231,22 +231,26 @@ class InputValidationMiddleware(BaseHTTPMiddleware):
             
             # For POST/PUT requests, sanitize JSON body
             if request.method in ("POST", "PUT", "PATCH") and request.headers.get("content-type", "").startswith("application/json"):
-                body = await request.body()
-                if body:
-                    try:
-                        json_data = json.loads(body)
-                        sanitized_json = self.sanitizer.sanitize_dict(json_data) if isinstance(json_data, dict) else self.sanitizer.sanitize_list(json_data)
-                        
-                        # Replace request body with sanitized version
-                        sanitized_body = json.dumps(sanitized_json).encode('utf-8')
-                        request._body = sanitized_body
-                        
-                    except json.JSONDecodeError:
-                        self.logger.warning("Invalid JSON in request body")
-                        raise HTTPException(
-                            status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Invalid JSON format"
-                        )
+                # Skip validation for auth endpoints to avoid body consumption issues
+                if "/auth/" in request.url.path:
+                    self.logger.debug(f"Skipping body validation for auth endpoint: {request.url.path}")
+                else:
+                    body = await request.body()
+                    if body:
+                        try:
+                            json_data = json.loads(body)
+                            sanitized_json = self.sanitizer.sanitize_dict(json_data) if isinstance(json_data, dict) else self.sanitizer.sanitize_list(json_data)
+                            
+                            # Replace request body with sanitized version
+                            sanitized_body = json.dumps(sanitized_json).encode('utf-8')
+                            request._body = sanitized_body
+                            
+                        except json.JSONDecodeError:
+                            self.logger.warning("Invalid JSON in request body")
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Invalid JSON format"
+                            )
             
             # Store sanitized parameters in request state for use by endpoints
             request.state.sanitized_query = sanitized_query_params

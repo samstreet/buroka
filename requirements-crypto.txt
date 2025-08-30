@@ -1,0 +1,4 @@
+# Additional requirements for Binance cryptocurrency integration
+aiohttp==3.9.1
+websockets==12.0
+python-binance==1.0.19

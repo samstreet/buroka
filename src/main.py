@@ -104,6 +104,13 @@ except ImportError:
     HAS_VOLUME = False
     print("⚠️  Volume Indicators API not available")
 
+try:
+    from src.api.routers.crypto import router as crypto_router
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
+    print("⚠️  Crypto API not available")
+
 # Create FastAPI application
 app = FastAPI(
     title="Market Analysis System",
@@ -391,6 +398,11 @@ except ImportError as e:
 if HAS_VOLUME:
     app.include_router(volume_router)
     print("✅ Volume Indicators API loaded")
+
+# Include crypto router
+if HAS_CRYPTO:
+    app.include_router(crypto_router)
+    print("✅ Crypto API loaded")
 
 # Startup event
 @app.on_event("startup")
